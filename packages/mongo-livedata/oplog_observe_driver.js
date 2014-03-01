@@ -191,7 +191,7 @@ _.extend(OplogObserveDriver.prototype, {
     }
   },
   _removePublished: function (id) {
-    console.log('_removePublished: ', id, self._published.get(id))
+    console.log('_removePublished: ', id, this._published.get(id))
     var self = this;
     self._published.remove(id);
     self._multiplexer.removed(id);
@@ -268,7 +268,7 @@ _.extend(OplogObserveDriver.prototype, {
   // Is called either to remove the doc completely from matching set or to move
   // it to the published set later.
   _removeBuffered: function (id) {
-    console.log('removeBuffered ', id, self._unpublishedBuffer.get(id));
+    console.log('removeBuffered ', id, this._unpublishedBuffer.get(id));
     var self = this;
     self._unpublishedBuffer.remove(id);
     // To keep the contract "buffer is never empty in STEADY phase unless the
@@ -566,19 +566,7 @@ _.extend(OplogObserveDriver.prototype, {
     if (self._stopped)
       throw new Error("oplog stopped surprisingly early");
 
-    // Query 2x documents as the half excluded from the original query will go
-    // into unpublished buffer to reduce additional Mongo lookups in cases when
-    // documents are removed from the published set and need a replacement.
-    // XXX needs more thought on non-zero skip
-    // XXX "2" here is a "magic number"
-    var initialCursor = self._cursorForQuery({ limit: self._limit * 2 });
-    var initialDocs = initialCursor.fetch();
-    var fetchedDocsCount = initialDocs.length;
-
-    self._safeAppendToBuffer = fetchedDocsCount < self._limit * 2;
-    _.each(initialDocs, function (initialDoc) {
-      self._addMatching(initialDoc);
-    });
+    self._resetPublishedAndBuffer();
 
     if (self._stopped)
       throw new Error("oplog stopped quite early");
@@ -618,23 +606,31 @@ _.extend(OplogObserveDriver.prototype, {
     // Defer so that we don't block.  We don't need finishIfNeedToPollQuery here
     // because SwitchedToQuery is not called in QUERYING mode.
     Meteor.defer(function () {
-      // subtle note: _published does not contain _id fields, but newResults
-      // does
-      var newResults = new LocalCollection._IdMap;
-      var newBuffer = new LocalCollection._IdMap;
-      // XXX 2 is a "magic number" meaning there is an extra chunk of docs for
-      // buffer if such is needed.
-      var cursor = self._cursorForQuery({ limit: self._limit * 2 });
-      cursor.forEach(function (doc, i) {
-        if (!self._limit || i < self._limit)
-          newResults.set(doc._id, doc);
-        else
-          newBuffer.set(doc._id, doc);
-      });
-
-      self._publishNewResults(newResults, newBuffer);
+      self._resetPublishedAndBuffer();
       self._doneQuerying();
     });
+  },
+
+  _resetPublishedAndBuffer: function () {
+    var self = this;
+    var newResults = new LocalCollection._IdMap;
+    var newBuffer = new LocalCollection._IdMap;
+
+    // Query 2x documents as the half excluded from the original query will go
+    // into unpublished buffer to reduce additional Mongo lookups in cases when
+    // documents are removed from the published set and need a replacement.
+    // XXX needs more thought on non-zero skip
+    // XXX 2 is a "magic number" meaning there is an extra chunk of docs for
+    // buffer if such is needed.
+    var cursor = self._cursorForQuery({ limit: self._limit * 2 });
+    cursor.forEach(function (doc, i) {
+      if (!self._limit || i < self._limit)
+        newResults.set(doc._id, doc);
+      else
+        newBuffer.set(doc._id, doc);
+    });
+
+    self._publishNewResults(newResults, newBuffer);
   },
 
   // Transitions to QUERYING and runs another query, or (if already in QUERYING)
