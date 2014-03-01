@@ -159,6 +159,7 @@ OplogObserveDriver = function (options) {
 
 _.extend(OplogObserveDriver.prototype, {
   _addPublished: function (id, doc) {
+    console.log('_addPublished: ', id, doc)
     var self = this;
     var fields = _.clone(doc);
     delete fields._id;
@@ -190,6 +191,7 @@ _.extend(OplogObserveDriver.prototype, {
     }
   },
   _removePublished: function (id) {
+    console.log('_removePublished: ', id, self._published.get(id))
     var self = this;
     self._published.remove(id);
     self._multiplexer.removed(id);
@@ -239,6 +241,7 @@ _.extend(OplogObserveDriver.prototype, {
     throw new Error("Buffer inexplicably empty");
   },
   _changePublished: function (id, oldDoc, newDoc) {
+    console.log('_changePublished: ', id, newDoc)
     var self = this;
     self._published.set(id, self._sharedProjectionFn(newDoc));
     var changed = LocalCollection._makeChangedFields(_.clone(newDoc), oldDoc);
@@ -247,6 +250,7 @@ _.extend(OplogObserveDriver.prototype, {
       self._multiplexer.changed(id, changed);
   },
   _addBuffered: function (id, doc) {
+    console.log('addBuffered ', id, doc);
     var self = this;
     self._unpublishedBuffer.set(id, self._sharedProjectionFn(doc));
 
@@ -264,6 +268,7 @@ _.extend(OplogObserveDriver.prototype, {
   // Is called either to remove the doc completely from matching set or to move
   // it to the published set later.
   _removeBuffered: function (id) {
+    console.log('removeBuffered ', id, self._unpublishedBuffer.get(id));
     var self = this;
     self._unpublishedBuffer.remove(id);
     // To keep the contract "buffer is never empty in STEADY phase unless the
@@ -276,6 +281,8 @@ _.extend(OplogObserveDriver.prototype, {
   // Takes responsibility of keeping _unpublishedBuffer in sync with _published
   // and the effect of limit enforced.
   _addMatching: function (doc) {
+    console.log('add Matching ', doc)
+    console.log('    ---  safe to append  ---', this._safeAppendToBuffer);
     var self = this;
     var id = doc._id;
     if (self._published.has(id))
@@ -300,13 +307,16 @@ _.extend(OplogObserveDriver.prototype, {
     // docs are either in the published set or in the buffer.
     var canAppendToBuffer = !toPublish && self._safeAppendToBuffer &&
                             self._unpublishedBuffer.size() < limit;
+    console.log('canAppendToBuffer ', canAppendToBuffer)
 
     // Or if it is small enough to be safely inserted to the middle or the
     // beginning of the buffer.
     var canInsertIntoBuffer = !toPublish && maxBuffered &&
                               comparator(doc, maxBuffered) <= 0;
+    console.log('canInsertIntoBuffer ', canInsertIntoBuffer)
 
     var toBuffer = canAppendToBuffer || canInsertIntoBuffer;
+    console.log('toBuffer:   ', toBuffer)
 
     if (toPublish) {
       self._addPublished(id, doc);
@@ -321,6 +331,7 @@ _.extend(OplogObserveDriver.prototype, {
   // Takes responsibility of keeping _unpublishedBuffer in sync with _published
   // and the effect of limit enforced.
   _removeMatching: function (id) {
+    console.log('remove matching ', id)
     var self = this;
     if (! self._published.has(id) && ! self._limit)
       throw Error("tried to remove something matching but not cached " + id);
@@ -332,6 +343,7 @@ _.extend(OplogObserveDriver.prototype, {
     }
   },
   _handleDoc: function (id, newDoc) {
+    console.log('handle doc ', id, newDoc)
     var self = this;
     newDoc = _.clone(newDoc);
 
@@ -359,6 +371,8 @@ _.extend(OplogObserveDriver.prototype, {
         // that buffer can't be empty if there are matching documents not
         // published. Notably, we don't want to schedule repoll and continue
         // relying on this property.
+        console.log('checks: ', !self._limit, self._unpublishedBuffer.size(), minBuffered && comparator(newDoc, minBuffered))
+        console.log('unpublished ', self._unpublishedBuffer._heap)
         var staysInPublished = ! self._limit ||
                                self._unpublishedBuffer.size() === 0 ||
                                comparator(newDoc, minBuffered) <= 0;
@@ -558,13 +572,13 @@ _.extend(OplogObserveDriver.prototype, {
     // XXX needs more thought on non-zero skip
     // XXX "2" here is a "magic number"
     var initialCursor = self._cursorForQuery({ limit: self._limit * 2 });
-    var fetchedDocsCount = 0;
-    initialCursor.forEach(function (initialDoc) {
-      self._addMatching(initialDoc);
-      fetchedDocsCount++;
-    });
+    var initialDocs = initialCursor.fetch();
+    var fetchedDocsCount = initialDocs.length;
 
     self._safeAppendToBuffer = fetchedDocsCount < self._limit * 2;
+    _.each(initialDocs, function (initialDoc) {
+      self._addMatching(initialDoc);
+    });
 
     if (self._stopped)
       throw new Error("oplog stopped quite early");
